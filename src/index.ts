@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { Client } from '@neondatabase/serverless'
+import { neon } from '@neondatabase/serverless'
 
 type Bindings = {
   DATABASE_URL: string
@@ -51,27 +51,33 @@ app.post('/iclock/cdata', async (c) => {
     console.log(`ATTLOG from ${sn}: ${records.length} record(s)`)
 
     if (records.length > 0) {
-      const client = new Client({ connectionString: c.env.DATABASE_URL })
-      await client.connect()
+      // Safely fetch DATABASE_URL binding inside request context
+      const dbUrl = c.env.DATABASE_URL
+      
+      if (!dbUrl) {
+        console.error('DATABASE_URL variable is not bound to Cloudflare Worker!')
+        return c.text('OK')
+      }
+
+      // Initialize neon HTTP client (works natively on Cloudflare Workers edge)
+      const sql = neon(dbUrl)
 
       try {
+        let insertedCount = 0
         for (const [userId, timestamp] of records) {
-          // Explicitly appends Asia/Manila offset (+08:00) for Neon timestamptz
+          // Format timestamp for Asia/Manila (+08:00)
           const tsWithTz = `${timestamp}+08:00`
-          await client.query(
-            `
+          
+          await sql`
             INSERT INTO attendance (user_id, timestamp)
-            VALUES ($1, $2::timestamptz)
+            VALUES (${userId}, ${tsWithTz}::timestamptz)
             ON CONFLICT DO NOTHING
-            `,
-            [userId, tsWithTz]
-          )
+          `
+          insertedCount++
         }
-        console.log(`Successfully saved ${records.length} record(s) to Neon.`)
+        console.log(`Successfully saved ${insertedCount} record(s) to Neon.`)
       } catch (e) {
         console.error('Database error during insert:', e)
-      } finally {
-        await client.end()
       }
     }
   } else {
