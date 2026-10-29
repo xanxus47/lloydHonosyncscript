@@ -7,22 +7,22 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// 1. GET /iclock/cdata - Device handshake configuring Asia/Manila (UTC+8) and forcing log push
+// 1. GET /iclock/cdata - Device handshake configured with optimized low-invocation intervals
 app.get('/iclock/cdata', (c) => {
   const sn = c.req.query('SN') || 'unknown'
-  console.log(`Device check-in SN=${sn} — requesting full ATTLOG`)
+  console.log(`Device check-in SN=${sn}`)
   
   const body = [
     `GET OPTION FROM: ${sn}`,
-    'ATTLOGStamp=0',         // Forces device to send all logs including past punches
+    'ATTLOGStamp=0',         // Forces device to sync logs if needed
     'OPERLOGStamp=0',
     'ATTPHOTOStamp=0',
-    'ErrorDelay=60',
-    'Delay=10',
+    'ErrorDelay=180',        // Increased error retry delay (3 minutes)
+    'Delay=120',             // Increased routine poll delay to 2 minutes (reduces background invocations)
     'TransTimes=00:00;23:59',
-    'TransInterval=1',
+    'TransInterval=60',      // Increased automated sync interval to 60 minutes
     'TransFlag=TransData AttLog\tOpLog',
-    'Realtime=1',
+    'Realtime=1',            // Keeps instant push active when someone scans their finger/face
     'TimeZone=8',            // Sets device timezone to UTC+8 (Asia/Manila)
     'ServerVer=2.4.1'
   ].join('\n')
@@ -40,7 +40,7 @@ app.post('/iclock/devicecmd', (c) => {
   return c.text('OK')
 })
 
-// 4. POST /iclock/cdata - Receives attendance logs from the device
+// 4. POST /iclock/cdata - Receives attendance logs from the device in real-time
 app.post('/iclock/cdata', async (c) => {
   const table = c.req.query('table') || ''
   const sn = c.req.query('SN') || 'unknown'
@@ -51,7 +51,6 @@ app.post('/iclock/cdata', async (c) => {
     console.log(`ATTLOG from ${sn}: ${records.length} record(s)`)
 
     if (records.length > 0) {
-      // Safely fetch DATABASE_URL binding inside request context
       const dbUrl = c.env.DATABASE_URL
       
       if (!dbUrl) {
@@ -59,13 +58,12 @@ app.post('/iclock/cdata', async (c) => {
         return c.text('OK')
       }
 
-      // Initialize neon HTTP client (works natively on Cloudflare Workers edge)
       const sql = neon(dbUrl)
 
       try {
         let insertedCount = 0
         for (const [userId, timestamp] of records) {
-          // Format timestamp for Asia/Manila (+08:00)
+          // Format timestamp explicitly for Asia/Manila (+08:00)
           const tsWithTz = `${timestamp}+08:00`
           
           await sql`
